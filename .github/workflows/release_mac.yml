@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - 'v*' # Triggers on tags like v0.1.0, v1.0.0
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Rehearse the release: build, sign and test the formula edit, but skip R2/CDN upload, the tap push, and the GitHub release"
+        type: boolean
+        default: true
 
 jobs:
   build-macos:
@@ -123,6 +129,7 @@ jobs:
           echo "${GITHUB_REF_NAME#v}" > artifacts/version.txt
 
       - name: Upload to Cloudflare R2
+        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.dry_run }}
         uses: ryand56/r2-upload-action@b801a390acbdeb034c5e684ff5e1361c06639e7c # v1.4
         with:
           r2-account-id: ${{ secrets.R2_ACCOUNT_ID }}
@@ -133,6 +140,7 @@ jobs:
           destination-dir: ./ # Destination prefix in bucket
 
       - name: Purge Cloudflare CDN Cache
+        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.dry_run }}
         run: |
           curl -s -X POST \
             "https://api.cloudflare.com/client/v4/zones/${{ secrets.CF_ZONE_ID }}/purge_cache" \
@@ -154,10 +162,12 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: AppachiTech/homebrew-suvadu
-          token: ${{ secrets.GH_PAT }}
+          token: ${{ secrets.GH_PAT || github.token }}
           path: homebrew-tap
 
       - name: Update Homebrew Tap
+        env:
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
         run: |
           set -euo pipefail
 
@@ -209,6 +219,13 @@ jobs:
           assert_in_formula "macos x86_64 sha256" "$X64_SHA"
 
           cd homebrew-tap
+
+          if [ "${DRY_RUN:-false}" = "true" ]; then
+            echo "[dry-run] would update Formula/suvadu.rb to ${TAG}; not committing or pushing:"
+            git --no-pager diff -- Formula/suvadu.rb
+            exit 0
+          fi
+
           git config user.name "Appachi Bot"
           git config user.email "bot@appachi.tech"
           git add Formula/suvadu.rb
@@ -238,6 +255,7 @@ jobs:
           fi
 
       - name: Create GitHub Release
+        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.dry_run }}
         uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2.5.0
         with:
           generate_release_notes: true
